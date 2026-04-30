@@ -24,12 +24,12 @@
 const { useState, useRef, useCallback, useEffect, useMemo } = React;
 
 const HOUR_HEIGHT = 32;
-const START_HOUR = 6;
-const END_HOUR = 23;
-const TOTAL_HOURS = END_HOUR - START_HOUR;
+const DEFAULT_START_HOUR = 6;
+const DEFAULT_END_HOUR = 23;
 const MIN_BLOCK_MINUTES = 15;
 const LS_DATA = "tb_data";
 const LS_CATS = "tb_cats";
+const LS_SETTINGS = "tb_settings";
 
 const DEFAULT_CATEGORIES = [
   { id: "deep", label: "Deep Work", color: "#2D5A3D", bg: "#E8F5E9" },
@@ -62,12 +62,28 @@ function loadJSON(key, fallback) {
   catch { return fallback; }
 }
 
+function migrateBlockData(data) {
+  const migrated = {};
+  for (const [key, day] of Object.entries(data)) {
+    migrated[key] = {
+      planned: (day.planned || []).map(b => ({ ...b, start: b.start + DEFAULT_START_HOUR * 60, end: b.end + DEFAULT_START_HOUR * 60 })),
+      actual: (day.actual || []).map(b => ({ ...b, start: b.start + DEFAULT_START_HOUR * 60, end: b.end + DEFAULT_START_HOUR * 60 })),
+    };
+  }
+  return migrated;
+}
+
 const snap = (minutes) => Math.round(minutes / MIN_BLOCK_MINUTES) * MIN_BLOCK_MINUTES;
-const yToMinutes = (y) => snap(Math.max(0, (y / HOUR_HEIGHT) * 60));
-const minutesToY = (m) => (m / 60) * HOUR_HEIGHT;
-const formatTime = (totalMin) => {
-  const h = Math.floor(totalMin / 60) + START_HOUR;
-  const m = totalMin % 60;
+const yToMinutes = (y, startHour) => snap(Math.max(0, (y / HOUR_HEIGHT) * 60)) + startHour * 60;
+const minutesToY = (absMin, startHour) => ((absMin - startHour * 60) / 60) * HOUR_HEIGHT;
+const formatHourLabel = (h) => {
+  if (h === 0 || h === 24) return "12 AM";
+  if (h === 12) return "12 PM";
+  return h > 12 ? `${h - 12} PM` : `${h} AM`;
+};
+const formatTime = (absMin) => {
+  const h = Math.floor(absMin / 60);
+  const m = absMin % 60;
   const period = h >= 12 ? "PM" : "AM";
   const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
   return `${h12}:${m.toString().padStart(2, "0")} ${period}`;
@@ -83,16 +99,24 @@ const isSameDay = (a, b) => dateKey(a) === dateKey(b);
 const uid = () => Math.random().toString(36).slice(2, 9);
 
 function TimeblockTracker() {
-  const [data, setData] = useState(() => loadJSON(LS_DATA, {}));
+  const [settings, setSettings] = useState(() => loadJSON(LS_SETTINGS, { startHour: DEFAULT_START_HOUR, endHour: DEFAULT_END_HOUR }));
+  const [data, setData] = useState(() => {
+    const raw = loadJSON(LS_DATA, {});
+    if (!localStorage.getItem(LS_SETTINGS)) return migrateBlockData(raw);
+    return raw;
+  });
   const [currentDate, setCurrentDate] = useState(new Date());
   const [activeTab, setActiveTab] = useState("plan");
   const [selectedCategory, setSelectedCategory] = useState("deep");
   const [categories, setCategories] = useState(() => loadJSON(LS_CATS, DEFAULT_CATEGORIES));
-  const [showCatManager, setShowCatManager] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
-  // Persist to localStorage
+  const { startHour, endHour } = settings;
+  const totalHours = endHour - startHour;
+
   useEffect(() => { localStorage.setItem(LS_DATA, JSON.stringify(data)); }, [data]);
   useEffect(() => { localStorage.setItem(LS_CATS, JSON.stringify(categories)); }, [categories]);
+  useEffect(() => { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }, [settings]);
 
   const key = dateKey(currentDate);
   const dayData = data[key] || { planned: [], actual: [] };
@@ -117,7 +141,7 @@ function TimeblockTracker() {
   };
 
   const exportJSON = () => {
-    const exportData = { version: 1, exportedAt: new Date().toISOString(), categories, blocks: data };
+    const exportData = { version: 2, exportedAt: new Date().toISOString(), settings, categories, blocks: data };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url;
@@ -133,8 +157,12 @@ function TimeblockTracker() {
       reader.onload = (ev) => {
         try {
           const parsed = JSON.parse(ev.target.result);
-          if (parsed.blocks) setData(parsed.blocks);
+          if (parsed.blocks) {
+            if (parsed.version === 1) setData(migrateBlockData(parsed.blocks));
+            else setData(parsed.blocks);
+          }
           if (parsed.categories) setCategories(parsed.categories);
+          if (parsed.settings) setSettings(parsed.settings);
         } catch { alert("Invalid JSON file"); }
       };
       reader.readAsText(file);
@@ -172,7 +200,8 @@ function TimeblockTracker() {
           dayData={dayData} updateDayData={updateDayData}
           selectedCategory={selectedCategory} setSelectedCategory={setSelectedCategory}
           categories={categories} setCategories={setCategories}
-          showCatManager={showCatManager} setShowCatManager={setShowCatManager}
+          showSettings={showSettings} setShowSettings={setShowSettings}
+          settings={settings} setSettings={setSettings}
         />
       )}
       {activeTab === "stats" && <StatsView data={data} currentDate={currentDate} categories={categories} />}
@@ -180,9 +209,9 @@ function TimeblockTracker() {
   );
 }
 
-/* ── Category Picker + Manager ── */
+/* ── Category Picker + Settings Panel ── */
 
-function CategoryPicker({ selected, onSelect, categories, onEditClick }) {
+function CategoryPicker({ selected, onSelect, categories, onSettingsClick }) {
   return (
     <div style={S.categoryPicker}>
       {categories.map((c) => (
@@ -192,12 +221,12 @@ function CategoryPicker({ selected, onSelect, categories, onEditClick }) {
           {c.label}
         </button>
       ))}
-      <button onClick={onEditClick} style={S.editCatBtn} title="Edit categories">⚙</button>
+      <button onClick={onSettingsClick} style={S.editCatBtn} title="Settings">⚙</button>
     </div>
   );
 }
 
-function CategoryManager({ categories, setCategories, onClose }) {
+function SettingsPanel({ categories, setCategories, settings, setSettings, onClose }) {
   const [newLabel, setNewLabel] = useState("");
   const [newColorIdx, setNewColorIdx] = useState(0);
   const [editingId, setEditingId] = useState(null);
@@ -219,41 +248,74 @@ function CategoryManager({ categories, setCategories, onClose }) {
     setEditingId(null);
   };
 
+  const updateRange = (field, value) => {
+    setSettings((prev) => {
+      const next = { ...prev, [field]: value };
+      if (next.endHour <= next.startHour) {
+        if (field === "startHour") next.endHour = Math.min(value + 1, 24);
+        else next.startHour = Math.max(value - 1, 0);
+      }
+      return next;
+    });
+  };
+
   return (
     <div style={S.catManager}>
       <div style={S.catManagerHeader}>
-        <span style={S.catManagerTitle}>Categories</span>
+        <span style={S.catManagerTitle}>Settings</span>
         <button onClick={onClose} style={S.catManagerClose}>✕</button>
       </div>
-      <div style={S.catList}>
-        {categories.map((c) => (
-          <div key={c.id} style={S.catItem}>
-            <span style={{ ...S.catDot, background: c.color }} />
-            {editingId === c.id ? (
-              <input value={editLabel} onChange={(e) => setEditLabel(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && saveEdit(c.id)}
-                onBlur={() => saveEdit(c.id)} autoFocus style={S.catEditInput} />
-            ) : (
-              <span style={S.catItemLabel} onClick={() => startEdit(c)}>{c.label}</span>
-            )}
-            <button onClick={() => setCategories((p) => p.filter((x) => x.id !== c.id))}
-              style={S.catRemoveBtn}>×</button>
-          </div>
-        ))}
+
+      <div style={S.settingsSection}>
+        <span style={S.settingsSectionLabel}>Display Range</span>
+        <div style={S.rangeRow}>
+          <span style={S.rangeLabel}>From</span>
+          <select value={settings.startHour} onChange={(e) => updateRange("startHour", Number(e.target.value))} style={S.rangeSelect}>
+            {Array.from({ length: 24 }, (_, i) => (
+              <option key={i} value={i} disabled={i >= settings.endHour}>{formatHourLabel(i)}</option>
+            ))}
+          </select>
+          <span style={S.rangeLabel}>To</span>
+          <select value={settings.endHour} onChange={(e) => updateRange("endHour", Number(e.target.value))} style={S.rangeSelect}>
+            {Array.from({ length: 24 }, (_, i) => i + 1).map((i) => (
+              <option key={i} value={i} disabled={i <= settings.startHour}>{formatHourLabel(i)}</option>
+            ))}
+          </select>
+        </div>
       </div>
-      <div style={S.catAddRow}>
-        <div style={S.catColorPicker}>
-          {PRESET_COLORS.map((p, i) => (
-            <button key={i} onClick={() => setNewColorIdx(i)}
-              style={{ ...S.catColorDot, background: p.color,
-                outline: newColorIdx === i ? "2px solid #fff" : "none", outlineOffset: 1 }} />
+
+      <div style={S.settingsSection}>
+        <span style={S.settingsSectionLabel}>Categories</span>
+        <div style={S.catList}>
+          {categories.map((c) => (
+            <div key={c.id} style={S.catItem}>
+              <span style={{ ...S.catDot, background: c.color }} />
+              {editingId === c.id ? (
+                <input value={editLabel} onChange={(e) => setEditLabel(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && saveEdit(c.id)}
+                  onBlur={() => saveEdit(c.id)} autoFocus style={S.catEditInput} />
+              ) : (
+                <span style={S.catItemLabel} onClick={() => startEdit(c)}>{c.label}</span>
+              )}
+              <button onClick={() => setCategories((p) => p.filter((x) => x.id !== c.id))}
+                style={S.catRemoveBtn}>×</button>
+            </div>
           ))}
         </div>
-        <div style={S.catAddInputRow}>
-          <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addCategory()}
-            placeholder="New category..." style={S.catAddInput} />
-          <button onClick={addCategory} style={S.catAddSubmit}>Add</button>
+        <div style={S.catAddRow}>
+          <div style={S.catColorPicker}>
+            {PRESET_COLORS.map((p, i) => (
+              <button key={i} onClick={() => setNewColorIdx(i)}
+                style={{ ...S.catColorDot, background: p.color,
+                  outline: newColorIdx === i ? "2px solid #fff" : "none", outlineOffset: 1 }} />
+            ))}
+          </div>
+          <div style={S.catAddInputRow}>
+            <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addCategory()}
+              placeholder="New category..." style={S.catAddInput} />
+            <button onClick={addCategory} style={S.catAddSubmit}>Add</button>
+          </div>
         </div>
       </div>
     </div>
@@ -262,7 +324,7 @@ function CategoryManager({ categories, setCategories, onClose }) {
 
 /* ── Compact Interactive Timeline ── */
 
-function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, selectedCategory, label, categories }) {
+function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, selectedCategory, label, categories, startHour, totalHours }) {
   const ref = useRef(null);
   const [creating, setCreating] = useState(null);
   const [resizing, setResizing] = useState(null);
@@ -281,13 +343,13 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
   const handlePointerDown = useCallback((e) => {
     if (e.target.closest("[data-block]") || e.target.closest("[data-resize]")) return;
     e.preventDefault();
-    const startMin = yToMinutes(getY(e));
+    const startMin = yToMinutes(getY(e), startHour);
     setCreating({ startMin, currentMin: startMin });
-  }, [getY]);
+  }, [getY, startHour]);
 
   useEffect(() => {
     if (!creating) return;
-    const move = (e) => { e.preventDefault(); setCreating((p) => p ? { ...p, currentMin: yToMinutes(getY(e)) } : null); };
+    const move = (e) => { e.preventDefault(); setCreating((p) => p ? { ...p, currentMin: yToMinutes(getY(e), startHour) } : null); };
     const up = () => {
       const c = creatingRef.current;
       if (c) {
@@ -300,7 +362,7 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
     window.addEventListener("touchmove", move, { passive: false }); window.addEventListener("touchend", up);
     return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up);
       window.removeEventListener("touchmove", move); window.removeEventListener("touchend", up); };
-  }, [creating, getY, onCreateBlock, selectedCategory]);
+  }, [creating, getY, onCreateBlock, selectedCategory, startHour]);
 
   const startResize = useCallback((e, blockId, edge) => {
     e.preventDefault(); e.stopPropagation();
@@ -312,7 +374,7 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
     if (!resizing) return;
     const move = (e) => {
       e.preventDefault();
-      const min = yToMinutes(getY(e)), r = resizingRef.current;
+      const min = yToMinutes(getY(e), startHour), r = resizingRef.current;
       if (!r) return;
       if (r.edge === "top") onUpdateBlock(r.blockId, { start: Math.min(min, r.origEnd - MIN_BLOCK_MINUTES) });
       else onUpdateBlock(r.blockId, { end: Math.max(min, r.origStart + MIN_BLOCK_MINUTES) });
@@ -322,7 +384,7 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
     window.addEventListener("touchmove", move, { passive: false }); window.addEventListener("touchend", up);
     return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up);
       window.removeEventListener("touchmove", move); window.removeEventListener("touchend", up); };
-  }, [resizing, getY, onUpdateBlock]);
+  }, [resizing, getY, onUpdateBlock, startHour]);
 
   const ghost = creating ? (() => {
     const s = Math.min(creating.startMin, creating.currentMin), e = Math.max(creating.startMin, creating.currentMin);
@@ -332,19 +394,19 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
   return (
     <div style={S.tlCol}>
       <div style={S.tlLabel}>{label}</div>
-      <div ref={ref} style={{ ...S.tl, height: TOTAL_HOURS * HOUR_HEIGHT }}
+      <div ref={ref} style={{ ...S.tl, height: totalHours * HOUR_HEIGHT }}
         onMouseDown={handlePointerDown} onTouchStart={handlePointerDown}>
-        {Array.from({ length: TOTAL_HOURS }, (_, i) => (
+        {Array.from({ length: totalHours }, (_, i) => (
           <div key={i} style={{ ...S.hourLine, top: i * HOUR_HEIGHT }}>
-            <span style={S.hourText}>{(() => { const h = i + START_HOUR; return `${h > 12 ? h - 12 : h}${h >= 12 ? "p" : "a"}`; })()}</span>
+            <span style={S.hourText}>{(() => { const h = i + startHour; return `${h > 12 ? h - 12 : h === 0 ? 12 : h}${h >= 12 ? "p" : "a"}`; })()}</span>
           </div>
         ))}
         {blocks.map((block) => {
           const cat = categories.find((c) => c.id === block.category) || categories[0];
           const dur = block.end - block.start;
           return (
-            <div key={block.id} data-block="1" style={{ ...S.block, top: minutesToY(block.start),
-              height: minutesToY(dur), background: cat.bg, borderLeft: `3px solid ${cat.color}` }}>
+            <div key={block.id} data-block="1" style={{ ...S.block, top: minutesToY(block.start, startHour),
+              height: (dur / 60) * HOUR_HEIGHT, background: cat.bg, borderLeft: `3px solid ${cat.color}` }}>
               <div data-resize="1" style={S.resizeTop} onMouseDown={(e) => startResize(e, block.id, "top")} onTouchStart={(e) => startResize(e, block.id, "top")} />
               <div style={S.blockInner}>
                 <span style={{ fontSize: 9, fontWeight: 600, color: cat.color, lineHeight: 1 }}>{cat.label}</span>
@@ -361,8 +423,8 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
           );
         })}
         {ghost && (
-          <div style={{ ...S.block, opacity: 0.5, pointerEvents: "none", top: minutesToY(ghost.start),
-            height: minutesToY(ghost.end - ghost.start),
+          <div style={{ ...S.block, opacity: 0.5, pointerEvents: "none", top: minutesToY(ghost.start, startHour),
+            height: ((ghost.end - ghost.start) / 60) * HOUR_HEIGHT,
             borderLeft: `3px solid ${categories.find((c) => c.id === selectedCategory)?.color || "#666"}`,
             background: categories.find((c) => c.id === selectedCategory)?.bg || "#eee" }} />
         )}
@@ -373,7 +435,10 @@ function CompactTimeline({ blocks, onCreateBlock, onDeleteBlock, onUpdateBlock, 
 
 /* ── Plan View (timelines + diff table) ── */
 
-function PlanView({ dayData, updateDayData, selectedCategory, setSelectedCategory, categories, setCategories, showCatManager, setShowCatManager }) {
+function PlanView({ dayData, updateDayData, selectedCategory, setSelectedCategory, categories, setCategories, showSettings, setShowSettings, settings, setSettings }) {
+  const { startHour, endHour } = settings;
+  const totalHours = endHour - startHour;
+
   const createBlock = useCallback((lane) => (block) => updateDayData((d) => ({ ...d, [lane]: [...d[lane], block] })), [updateDayData]);
   const deleteBlock = useCallback((lane) => (id) => updateDayData((d) => ({ ...d, [lane]: d[lane].filter((b) => b.id !== id) })), [updateDayData]);
   const updateBlock = useCallback((lane) => (id, updates) => updateDayData((d) => ({ ...d, [lane]: d[lane].map((b) => (b.id === id ? { ...b, ...updates } : b)) })), [updateDayData]);
@@ -398,16 +463,19 @@ function PlanView({ dayData, updateDayData, selectedCategory, setSelectedCategor
   return (
     <div style={{ paddingTop: 12 }}>
       <CategoryPicker selected={selectedCategory} onSelect={setSelectedCategory}
-        categories={categories} onEditClick={() => setShowCatManager((v) => !v)} />
-      {showCatManager && <CategoryManager categories={categories} setCategories={setCategories} onClose={() => setShowCatManager(false)} />}
+        categories={categories} onSettingsClick={() => setShowSettings((v) => !v)} />
+      {showSettings && <SettingsPanel categories={categories} setCategories={setCategories}
+        settings={settings} setSettings={setSettings} onClose={() => setShowSettings(false)} />}
       <div style={S.instruction}>
         Drag to create blocks · drag edges to resize · <strong>{categories.find((c) => c.id === selectedCategory)?.label}</strong>
       </div>
       <div style={S.timelinesRow}>
         <CompactTimeline blocks={planned} onCreateBlock={createBlock("planned")} onDeleteBlock={deleteBlock("planned")}
-          onUpdateBlock={updateBlock("planned")} selectedCategory={selectedCategory} label="Planned" categories={categories} />
+          onUpdateBlock={updateBlock("planned")} selectedCategory={selectedCategory} label="Planned"
+          categories={categories} startHour={startHour} totalHours={totalHours} />
         <CompactTimeline blocks={actual} onCreateBlock={createBlock("actual")} onDeleteBlock={deleteBlock("actual")}
-          onUpdateBlock={updateBlock("actual")} selectedCategory={selectedCategory} label="Actual" categories={categories} />
+          onUpdateBlock={updateBlock("actual")} selectedCategory={selectedCategory} label="Actual"
+          categories={categories} startHour={startHour} totalHours={totalHours} />
       </div>
 
       {hasDiff && (
@@ -594,6 +662,12 @@ const S = {
   catAddInputRow: { display: "flex", gap: 6 },
   catAddInput: { flex: 1, fontSize: 12, color: "#fff", background: "#2a2a2a", border: "1px solid #444", borderRadius: 4, padding: "5px 8px", outline: "none", fontFamily: "'DM Sans', sans-serif" },
   catAddSubmit: { padding: "5px 12px", border: "none", borderRadius: 4, background: "#333", color: "#ccc", cursor: "pointer", fontSize: 12, fontWeight: 500, fontFamily: "'DM Sans', sans-serif" },
+
+  settingsSection: { marginBottom: 12 },
+  settingsSectionLabel: { fontSize: 10, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 6 },
+  rangeRow: { display: "flex", alignItems: "center", gap: 8 },
+  rangeLabel: { fontSize: 12, color: "#888" },
+  rangeSelect: { flex: 1, fontSize: 12, color: "#fff", background: "#2a2a2a", border: "1px solid #444", borderRadius: 4, padding: "5px 8px", outline: "none", fontFamily: "'DM Sans', sans-serif", appearance: "auto" },
 
   timelinesRow: { display: "flex", gap: 8 },
   tlCol: { flex: 1, minWidth: 0 },
