@@ -14,9 +14,14 @@ Personal time blocking PWA. Plan your day in blocks, log what actually happened,
 
 ## Usage
 
-Open `index.html` in a browser, or deploy to GitHub Pages.
+```bash
+./serve.sh        # serves on port 8070
+./serve.sh 3000   # custom port
+```
 
-Single-file PWA -- no build step, no dependencies beyond CDN-loaded React.
+Access from other devices on the same network (or via VPN) using the printed IP.
+
+Or just open `index.html` directly in a browser -- everything works offline.
 
 ## Data
 
