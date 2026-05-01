@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1a1a1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>Timeblocks</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -179,7 +185,7 @@ function TimeblockTracker() {
             <button onClick={exportJSON} style={S.iconBtn} title="Export JSON">↓</button>
             <button onClick={importJSON} style={S.iconBtn} title="Import JSON">↑</button>
             <div style={S.tabs}>
-              {[["plan", "Plan"], ["stats", "Stats"]].map(([id, label]) => (
+              {[["plan", "Plan"], ["diff", "Diff"], ["stats", "Stats"]].map(([id, label]) => (
                 <button key={id} onClick={() => setActiveTab(id)}
                   style={{ ...S.tab, ...(activeTab === id ? S.tabActive : {}) }}>
                   {label}
@@ -204,6 +210,7 @@ function TimeblockTracker() {
           settings={settings} setSettings={setSettings}
         />
       )}
+      {activeTab === "diff" && <DiffView data={data} currentDate={currentDate} categories={categories} />}
       {activeTab === "stats" && <StatsView data={data} currentDate={currentDate} categories={categories} />}
     </div>
   );
@@ -515,6 +522,140 @@ function PlanView({ dayData, updateDayData, selectedCategory, setSelectedCategor
   );
 }
 
+/* ── Diff View (day-by-day breakdown) ── */
+
+function DiffView({ data, currentDate, categories }) {
+  const [mode, setMode] = useState("week");
+
+  const days = useMemo(() => {
+    const result = [];
+    if (mode === "week") {
+      const start = new Date(currentDate);
+      start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+      for (let i = 0; i < 7; i++) { const d = new Date(start); d.setDate(d.getDate() + i); result.push(d); }
+    } else {
+      for (let i = 6; i >= 0; i--) { const d = new Date(currentDate); d.setDate(d.getDate() - i); result.push(d); }
+    }
+    return result;
+  }, [currentDate, mode]);
+
+  const rangeLabel = (() => {
+    const fmt = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `${fmt(days[0])} – ${fmt(days[6])}`;
+  })();
+
+  const weekTotals = useMemo(() => {
+    const totals = {};
+    categories.forEach((c) => (totals[c.id] = { planned: 0, actual: 0 }));
+    days.forEach((d) => {
+      const dd = data[dateKey(d)] || { planned: [], actual: [] };
+      dd.planned.forEach((b) => { if (totals[b.category]) totals[b.category].planned += b.end - b.start; });
+      dd.actual.forEach((b) => { if (totals[b.category]) totals[b.category].actual += b.end - b.start; });
+    });
+    return totals;
+  }, [days, data, categories]);
+
+  const weekPlanned = Object.values(weekTotals).reduce((s, t) => s + t.planned, 0);
+  const weekActual = Object.values(weekTotals).reduce((s, t) => s + t.actual, 0);
+
+  return (
+    <div style={{ paddingTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <h3 style={{ ...S.statsTitle, marginBottom: 0 }}>{rangeLabel}</h3>
+        <div style={S.tabs}>
+          {[["week", "This Week"], ["rolling", "Last 7 Days"]].map(([id, label]) => (
+            <button key={id} onClick={() => setMode(id)}
+              style={{ ...S.tab, ...(mode === id ? S.tabActive : {}), fontSize: 11, padding: "4px 10px" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {days.map((d) => {
+        const dk = dateKey(d);
+        const dd = data[dk] || { planned: [], actual: [] };
+        const planned = dd.planned || [];
+        const actual = dd.actual || [];
+        const dayLabel = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+        const isToday = isSameDay(d, new Date());
+        const totalP = planned.reduce((s, b) => s + (b.end - b.start), 0);
+        const totalA = actual.reduce((s, b) => s + (b.end - b.start), 0);
+
+        const catTotals = {};
+        categories.forEach((c) => {
+          const pMin = planned.filter((b) => b.category === c.id).reduce((s, b) => s + (b.end - b.start), 0);
+          const aMin = actual.filter((b) => b.category === c.id).reduce((s, b) => s + (b.end - b.start), 0);
+          if (pMin > 0 || aMin > 0) catTotals[c.id] = { planned: pMin, actual: aMin, diff: aMin - pMin };
+        });
+
+        const hasDiff = Object.keys(catTotals).length > 0;
+
+        return (
+          <div key={dk} style={S.diffDayCard}>
+            <div style={S.diffDayHeader}>
+              <span style={{ ...S.diffDayLabel, color: isToday ? "#fff" : "#aaa" }}>
+                {dayLabel}{isToday ? " — Today" : ""}
+              </span>
+              {totalP > 0 && (
+                <span style={{ fontSize: 10, color: "#666", fontFamily: "'JetBrains Mono', monospace" }}>
+                  {formatDuration(totalP)} planned · {formatDuration(totalA)} actual
+                </span>
+              )}
+            </div>
+            {hasDiff ? (
+              <div style={{ marginTop: 6 }}>
+                {Object.entries(catTotals).map(([catId, t]) => {
+                  const cat = categories.find((c) => c.id === catId);
+                  return (
+                    <div key={catId} style={S.diffDayRow}>
+                      <span style={{ ...S.diffDayCell, color: cat?.color, fontWeight: 500, width: 80 }}>{cat?.label}</span>
+                      <span style={S.diffDayCell}>{formatDuration(t.planned)}</span>
+                      <span style={S.diffDayCell}>{formatDuration(t.actual)}</span>
+                      <span style={{ ...S.diffDayCell, fontFamily: "'JetBrains Mono', monospace",
+                        color: t.diff > 0 ? "#e67e22" : t.diff < 0 ? "#c0392b" : "#888" }}>
+                        {t.diff > 0 ? "+" : ""}{formatDuration(Math.abs(t.diff))}{t.diff < 0 ? " under" : t.diff > 0 ? " over" : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <span style={{ fontSize: 11, color: "#444", fontStyle: "italic" }}>No blocks</span>
+            )}
+          </div>
+        );
+      })}
+
+      <div style={{ ...S.diffDayCard, borderColor: "#444", marginTop: 16 }}>
+        <div style={S.diffDayHeader}>
+          <span style={{ ...S.diffDayLabel, color: "#fff", fontWeight: 600 }}>Week Total</span>
+          <span style={{ fontSize: 10, color: "#888", fontFamily: "'JetBrains Mono', monospace" }}>
+            {formatDuration(weekPlanned)} planned · {formatDuration(weekActual)} actual
+          </span>
+        </div>
+        <div style={{ marginTop: 6 }}>
+          {Object.entries(weekTotals).filter(([, t]) => t.planned > 0 || t.actual > 0).map(([catId, t]) => {
+            const cat = categories.find((c) => c.id === catId);
+            const diff = t.actual - t.planned;
+            return (
+              <div key={catId} style={S.diffDayRow}>
+                <span style={{ ...S.diffDayCell, color: cat?.color, fontWeight: 500, width: 80 }}>{cat?.label}</span>
+                <span style={S.diffDayCell}>{formatDuration(t.planned)}</span>
+                <span style={S.diffDayCell}>{formatDuration(t.actual)}</span>
+                <span style={{ ...S.diffDayCell, fontFamily: "'JetBrains Mono', monospace",
+                  color: diff > 0 ? "#e67e22" : diff < 0 ? "#c0392b" : "#888" }}>
+                  {diff > 0 ? "+" : ""}{formatDuration(Math.abs(diff))}{diff < 0 ? " under" : diff > 0 ? " over" : ""}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Stats View ── */
 
 function StatsView({ data, currentDate, categories }) {
@@ -703,6 +844,12 @@ const S = {
   legendItem: { display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#888" },
   legendDot: { width: 10, height: 10, borderRadius: 2, display: "inline-block" },
 
+  diffDayCard: { background: "#222", borderRadius: 8, padding: 10, marginBottom: 8, border: "1px solid #2a2a2a" },
+  diffDayHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  diffDayLabel: { fontSize: 12, fontWeight: 500 },
+  diffDayRow: { display: "grid", gridTemplateColumns: "80px 1fr 1fr 1.3fr", gap: 6, padding: "3px 0" },
+  diffDayCell: { fontSize: 11, color: "#bbb" },
+
   catStats: { display: "flex", flexDirection: "column", gap: 10 },
   statCatRow: { display: "flex", alignItems: "center", gap: 12 },
   statCatLabel: { fontSize: 11, fontWeight: 600, width: 70, flexShrink: 0 },
@@ -711,6 +858,10 @@ const S = {
   barFill: { height: "100%", borderRadius: 3, transition: "width 0.3s" },
   barNum: { position: "absolute", right: 4, top: 1, fontSize: 9, color: "#777", fontFamily: "'JetBrains Mono', monospace" },
 };
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js");
+}
 
 ReactDOM.createRoot(document.getElementById("root")).render(<TimeblockTracker />);
 </script>

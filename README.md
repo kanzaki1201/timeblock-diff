@@ -6,22 +6,26 @@ Personal time blocking PWA. Plan your day in blocks, log what actually happened,
 
 - **Side-by-side timelines** -- Planned vs Actual, drag to create blocks, drag edges to resize
 - **Category system** -- customizable categories with color picker
-- **Diff table** -- per-category comparison of planned vs actual time
+- **Diff table** -- inline diff under timelines + dedicated day-by-day Diff tab
 - **Weekly stats** -- bar chart + per-category breakdown, "This Week" / "Last 7 Days" toggle
 - **Customizable range** -- set your own start/end hours via Settings (gear icon)
 - **Data portability** -- JSON export/import
-- **Offline-first** -- all data in localStorage, no server needed
+- **PWA** -- installable on mobile, works offline via service worker
 
-## Usage
+## Setup
 
 ```bash
-./serve.sh        # serves on port 8070
-./serve.sh 3000   # custom port
+# One-time: generate HTTPS certs for local network access
+./setup.sh
+
+# Start the server
+node serve.js         # port 8070 (default)
+node serve.js 3000    # custom port
 ```
 
-Access from other devices on the same network (or via VPN) using the printed IP.
+The setup script uses `mkcert` to create locally-trusted certificates. To install on your phone, transfer the root CA file (path printed by setup.sh) and install it in your device's certificate settings.
 
-Or just open `index.html` directly in a browser -- everything works offline.
+Without certs, the server falls back to HTTP -- the app works but PWA install won't be available over LAN.
 
 ## Data
 
