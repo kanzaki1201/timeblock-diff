@@ -120,9 +120,31 @@ function TimeblockTracker() {
   const { startHour, endHour } = settings;
   const totalHours = endHour - startHour;
 
-  useEffect(() => { localStorage.setItem(LS_DATA, JSON.stringify(data)); }, [data]);
-  useEffect(() => { localStorage.setItem(LS_CATS, JSON.stringify(categories)); }, [categories]);
-  useEffect(() => { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }, [settings]);
+  const serverReady = useRef(false);
+  const syncTimer = useRef(null);
+
+  useEffect(() => {
+    fetch("/api/data").then((r) => r.json()).then((sd) => {
+      if (sd.blocks && Object.keys(sd.blocks).length > 0) setData(sd.blocks);
+      if (sd.categories && sd.categories.length > 0) setCategories(sd.categories);
+      if (sd.settings) setSettings(sd.settings);
+    }).catch(() => {}).finally(() => { serverReady.current = true; });
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(LS_DATA, JSON.stringify(data));
+    localStorage.setItem(LS_CATS, JSON.stringify(categories));
+    localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
+    if (!serverReady.current) return;
+    clearTimeout(syncTimer.current);
+    syncTimer.current = setTimeout(() => {
+      fetch("/api/data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blocks: data, categories, settings }),
+      }).catch(() => {});
+    }, 1000);
+  }, [data, categories, settings]);
 
   const key = dateKey(currentDate);
   const dayData = data[key] || { planned: [], actual: [] };

@@ -7,6 +7,7 @@ const PORT = parseInt(process.argv[2] || "8070");
 const HOST = "0.0.0.0";
 const DIR = __dirname;
 const CERT_DIR = path.join(DIR, "certs");
+const DATA_FILE = path.join(DIR, "data", "store.json");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -17,9 +18,41 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
 function handler(req, res) {
-  let filePath = req.url.split("?")[0];
-  if (filePath === "/") filePath = "/index.html";
+  const url = req.url.split("?")[0];
+
+  if (url === "/api/data" && req.method === "GET") {
+    fs.readFile(DATA_FILE, "utf8", (err, raw) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(err ? "{}" : raw);
+    });
+    return;
+  }
+
+  if (url === "/api/data" && req.method === "POST") {
+    readBody(req).then((body) => {
+      JSON.parse(body);
+      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+      fs.writeFileSync(DATA_FILE, body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end('{"ok":true}');
+    }).catch(() => {
+      res.writeHead(400);
+      res.end("Invalid JSON");
+    });
+    return;
+  }
+
+  let filePath = url === "/" ? "/index.html" : url;
   filePath = path.join(DIR, filePath);
 
   if (!filePath.startsWith(DIR)) {
